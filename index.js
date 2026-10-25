@@ -88,6 +88,24 @@ function validUnicode(text) {
   return true;
 }
 
+function validateResponse(response) {
+  if (!Number.isInteger(response.status) || response.status < 200 || response.status > 599) invalid();
+  if (typeof response.body !== 'string' || !validUnicode(response.body) || Buffer.byteLength(response.body) > MAX_BODY) invalid();
+  if ((response.status === 204 || response.status === 304) && response.body !== '') invalid();
+  if (Object.hasOwn(response, 'headers')) {
+    if (!object(response.headers)) invalid();
+    const names = new Set();
+    for (const [name, value] of Object.entries(response.headers)) {
+      const lower = name.toLowerCase();
+      if (!TOKEN.test(name) || names.has(lower) || FORBIDDEN_HEADERS.has(lower)) invalid();
+      // Node's HTTP/1 header representation uses Latin-1; reject controls,
+      // including the C1 range, and unrepresentable Unicode characters.
+      if (typeof value !== 'string' || /[^\x09\x20-\x7E\xA0-\xFF]/.test(value)) invalid();
+      names.add(lower);
+    }
+  }
+}
+
 /** Return a detached, deeply frozen snapshot of a passive JSON fixture. */
 export function validateFixture(document) {
   try {
@@ -96,26 +114,20 @@ export function validateFixture(document) {
     if (!Array.isArray(fixture.routes) || fixture.routes.length > 1000) invalid();
     const routes = new Set();
     for (const route of fixture.routes) {
-      exactKeys(route, ['method', 'path', 'status', 'body'], ['headers']);
+      const sequence = object(route) && Object.hasOwn(route, 'responses');
+      if (sequence) exactKeys(route, ['method', 'path', 'responses']);
+      else exactKeys(route, ['method', 'path', 'status', 'body'], ['headers']);
       if (!METHODS.has(route.method) || !validPath(route.path)) invalid();
-      if (!Number.isInteger(route.status) || route.status < 200 || route.status > 599) invalid();
-      if (typeof route.body !== 'string' || !validUnicode(route.body) || Buffer.byteLength(route.body) > MAX_BODY) invalid();
-      if ((route.status === 204 || route.status === 304) && route.body !== '') invalid();
       const key = `${route.method} ${route.path}`;
       if (routes.has(key)) invalid();
       routes.add(key);
-      if (Object.hasOwn(route, 'headers')) {
-        if (!object(route.headers)) invalid();
-        const names = new Set();
-        for (const [name, value] of Object.entries(route.headers)) {
-          const lower = name.toLowerCase();
-          if (!TOKEN.test(name) || names.has(lower) || FORBIDDEN_HEADERS.has(lower)) invalid();
-          // Node's HTTP/1 header representation uses Latin-1; reject controls,
-          // including the C1 range, and unrepresentable Unicode characters.
-          if (typeof value !== 'string' || /[^\x09\x20-\x7E\xA0-\xFF]/.test(value)) invalid();
-          names.add(lower);
+      if (sequence) {
+        if (!Array.isArray(route.responses) || route.responses.length < 1 || route.responses.length > 100) invalid();
+        for (const response of route.responses) {
+          exactKeys(response, ['status', 'body'], ['headers']);
+          validateResponse(response);
         }
-      }
+      } else validateResponse(route);
     }
     return fixture;
   } catch {
@@ -143,7 +155,11 @@ export async function startFixtureServer(document, options = {}) {
   exactKeys(settings, [], ['port']);
   const port = Object.hasOwn(settings, 'port') ? settings.port : 0;
   if (!Number.isInteger(port) || port < 0 || port > 65_535) invalid();
-  const routes = new Map(fixture.routes.map(route => [`${route.method} ${route.path}`, route]));
+  // Cursors belong only to this server, never to its immutable fixture snapshot.
+  const routes = new Map(fixture.routes.map(route => [
+    `${route.method} ${route.path}`,
+    { responses: route.responses ?? [route], position: 0 },
+  ]));
   const sockets = new Set();
   let actualPort;
   let closePromise;
@@ -204,7 +220,12 @@ export async function startFixtureServer(document, options = {}) {
       finished = true;
       const route = routes.get(`${request.method} ${path}`);
       if (!route) respond(request, response, 404, 'Route not found.\n');
-      else respond(request, response, route.status, route.body, route.headers);
+      else {
+        // The end event orders accepted bodies, even across concurrent sockets.
+        const selected = route.responses[route.position];
+        if (route.position < route.responses.length - 1) route.position++;
+        respond(request, response, selected.status, selected.body, selected.headers);
+      }
     });
   });
   server.maxConnections = 64;

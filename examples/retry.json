@@ -1,0 +1,20 @@
+{
+  "routes": [
+    {
+      "method": "GET",
+      "path": "/orders/demo-retry",
+      "responses": [
+        {
+          "status": 503,
+          "body": "{\"error\":\"synthetic temporary failure\"}\n",
+          "headers": { "Content-Type": "application/json", "Retry-After": "0" }
+        },
+        {
+          "status": 200,
+          "body": "{\"id\":\"demo-retry\",\"status\":\"ready\"}\n",
+          "headers": { "Content-Type": "application/json" }
+        }
+      ]
+    }
+  ]
+}

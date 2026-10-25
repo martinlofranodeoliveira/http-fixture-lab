@@ -1,6 +1,6 @@
 # HTTP Fixture Lab
 
-A small HTTP fixture server for integration tests, client demos and failure-path checks. Declare fixed responses in JSON, start a server on an available loopback port, point your client at it and close it when the test ends. Node.js 20 or newer; zero runtime or development dependencies.
+A small HTTP fixture server for integration tests, client demos and failure-path checks. Declare fixed responses or deterministic response sequences in JSON, start a server on an available loopback port, point your client at it and close it when the test ends. Node.js 20 or newer; zero runtime or development dependencies.
 
 [Português brasileiro](README.pt-BR.md) · [MIT license](LICENSE)
 
@@ -11,7 +11,7 @@ node cli.js examples/payments.json
 # http://127.0.0.1:49152 (the actual port varies)
 ```
 
-The synthetic payment example includes health, a paid payment, creation, deletion and a temporary `503` with `Retry-After`. Use the printed address as your application's API base URL. For example, request `/payments/demo-001` to exercise successful JSON parsing, or `/payments/unavailable` to exercise retry handling. All identifiers and responses are invented.
+The synthetic payment example includes health, a paid payment, creation, deletion and a persistent `503` with `Retry-After`. Use the printed address as your application's API base URL. For example, request `/payments/demo-001` to exercise successful JSON parsing, or `/payments/unavailable` to exercise a persistent failure. All identifiers and responses are invented.
 
 ```sh
 node cli.js examples/payments.json --port 8087
@@ -20,6 +20,30 @@ node --test
 ```
 
 The CLI prints exactly the URL after listening and remains alive until `SIGINT` or `SIGTERM`. Invalid input, file errors and bind errors produce a generic diagnostic on stderr and exit code `2`. It reads only the explicitly named regular UTF-8 JSON file, at most 1 MiB. JSON duplicate member names follow `JSON.parse`: **the last occurrence wins**. Duplicate detection is not provided.
+
+## Retry a temporary failure
+
+```sh
+node examples/retry.mjs
+# attempt 1: 503
+# attempt 2: 200
+# attempt 3: 200
+```
+
+This runnable synthetic client starts a loopback fixture, consumes its `503 → 200 → 200` responses and closes the server. To point your own client at the same sequence, run `node cli.js examples/retry.json` and request `/orders/demo-retry` at the printed URL. `Retry-After: 0` makes the example immediate. Each new server starts at the first response.
+
+The JSON route is declarative:
+
+```json
+{
+  "method": "GET",
+  "path": "/orders/demo-retry",
+  "responses": [
+    { "status": 503, "body": "try again\n", "headers": { "Retry-After": "0" } },
+    { "status": 200, "body": "ready\n" }
+  ]
+}
+```
 
 ## Library
 
@@ -53,7 +77,10 @@ try {
 
 ## Fixture contract
 
-The root has exactly `routes`, a dense array of at most 1,000 routes. An empty list is valid. Each route has exactly `method`, `path`, `status`, `body`, and optional `headers`.
+The root has exactly `routes`, a dense array of at most 1,000 routes. An empty list is valid. Each route uses exactly one of two shapes:
+
+- Static: `method`, `path`, `status`, `body`, and optional `headers`.
+- Sequence: `method`, `path`, and `responses`, a dense array of 1 through 100 response objects. Each response has exactly `status`, `body`, and optional `headers` with the same rules as a static route. The shapes cannot be mixed; sequence routes have no route-level `status`, `body`, or `headers`.
 
 | Field | Rules |
 | --- | --- |
@@ -63,11 +90,15 @@ The root has exactly `routes`, a dense array of at most 1,000 routes. An empty l
 | `body` | Valid Unicode string, at most 65,536 UTF-8 bytes. Must be empty for `204` and `304`. |
 | `headers` | Plain object of valid HTTP token names and string values; case-insensitive duplicate names are rejected. Values permit TAB, ASCII space/visible bytes and Latin-1 `U+00A0`–`U+00FF`, with no other control characters. |
 
-Routing matches the declared method and **exact encoded pathname**. `/a%2Fb`, `/a%2fb` and `/a/b` are distinct. Query strings are ignored. There are no wildcards, GET-to-HEAD fallback, path decoding, body matching or dynamic responses. Declare a `HEAD` route when needed: it advertises its configured body's UTF-8 byte length and sends no response body.
+Routing matches the declared method and **exact encoded pathname**. `/a%2Fb`, `/a%2fb` and `/a/b` are distinct. Query strings are ignored. There are no wildcards, GET-to-HEAD fallback, path decoding, body matching or computed responses. Declare a `HEAD` route when needed: it advertises its selected body's UTF-8 byte length and sends no response body.
+
+Each server keeps an independent sequence position for each exact method and encoded pathname. A matched, valid request consumes the next response only when its entire body finishes draining; the final response repeats indefinitely. Rejected requests (including malformed framing or paths, wrong Host, unsupported methods, oversized or incomplete bodies) and unknown routes do not advance a sequence. `HEAD` consumes its own explicitly declared sequence. Static responses always repeat.
+
+For concurrent clients, response selection follows the order in which accepted request bodies finish draining, **not connection creation or header arrival**. A later connection whose body completes first can receive the earlier sequence response. Do not rely on an order between clients that finish together. Positions never modify the input or frozen snapshot. Separate servers created from the same snapshot are independent, and starting a new server restarts every sequence. There is no reset API, looping behavior or sequence option.
 
 Ordinary headers such as `Content-Type`, `Location`, custom headers and `Retry-After` are supported. Hop-by-hop headers (`Connection`, `Keep-Alive`, `Proxy-Authenticate`, `Proxy-Authorization`, `Proxy-Connection`, `TE`, `Trailer`, `Transfer-Encoding`, `Upgrade`) and `Content-Length` are rejected. The server generates one canonical `Content-Length` from the body bytes, including zero for `204` and `304`. It defaults to `text/plain; charset=utf-8` when no content type is supplied.
 
-Configuration must be **passive JSON data**: plain or null-prototype objects, dense normal arrays and JSON primitive values. Functions, accessors, proxies (including revoked proxies), custom prototypes, symbol keys, nonenumerable properties, array holes, array extras and cycles are rejected. Inspection uses property descriptors and rejects proxies before inspecting them, without invoking getters or proxy traps. Depth and traversal budgets bound configuration complexity. Validation does not change or freeze caller-owned data. Invalid configuration always throws `FixtureError` with `Invalid fixture configuration.` This is a strict data interface, **not an arbitrary JavaScript sandbox**; it assumes untampered Node.js built-ins.
+Configuration must be **passive JSON data**: plain or null-prototype objects, dense normal arrays and JSON primitive values. Functions, accessors, proxies (including revoked proxies), custom prototypes, symbol keys, nonenumerable properties, array holes, array extras and cycles are rejected. Inspection uses property descriptors and rejects proxies before inspecting them, without invoking getters or proxy traps. The same global depth limit (12), traversal budget (20,000 values), and per-container limit (1,000 entries) apply across the complete configuration, including every sequence response. The 100-response limit is per route; it does not expand these global budgets. Each response body keeps the 65,536-byte limit. Validation does not change or freeze caller-owned data. Invalid configuration always throws `FixtureError` with `Invalid fixture configuration.` This is a strict data interface, **not an arbitrary JavaScript sandbox**; it assumes untampered Node.js built-ins.
 
 ## HTTP behavior and limits
 
@@ -81,7 +112,7 @@ This is a development testing tool. Loopback binding and Host checks reduce acci
 
 ## Development
 
-Run `node --test` with Node 20+. Tests cover real loopback HTTP, byte lengths, HEAD, request draining, oversized/chunked bodies, Host validation, immutable passive configuration, simultaneous clients, shutdown and CLI signals/errors. CI checks Node 20, 22 and 24 with read-only repository permissions. Tests do not contact external services or install packages.
+Run `node --test` with Node 20+. Tests cover real loopback HTTP, byte lengths, HEAD, request draining, oversized/chunked bodies, Host validation, immutable passive configuration, sequence validation, retry progression, independent cursors, completion order across concurrent clients, rejected requests, shutdown, the runnable retry example and CLI signals/errors. CI checks Node 20, 22 and 24 with read-only repository permissions. Tests do not contact external services or install packages.
 
 To reproduce an isolated Linux run with Bubblewrap (if user namespaces and isolated loopback are enabled):
 
