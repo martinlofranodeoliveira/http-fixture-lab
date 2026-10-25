@@ -1,0 +1,10 @@
+{
+  "routes": [
+    { "method": "GET", "path": "/health", "status": 200, "body": "ready\n" },
+    { "method": "GET", "path": "/payments/demo-001", "status": 200, "body": "{\"id\":\"demo-001\",\"status\":\"paid\",\"currency\":\"BRL\"}\n", "headers": { "Content-Type": "application/json; charset=utf-8", "X-Fixture": "synthetic" } },
+    { "method": "POST", "path": "/payments", "status": 201, "body": "{\"id\":\"demo-created\",\"status\":\"pending\"}\n", "headers": { "Content-Type": "application/json; charset=utf-8", "Location": "/payments/demo-created" } },
+    { "method": "GET", "path": "/payments/unavailable", "status": 503, "body": "try again\n", "headers": { "Retry-After": "2" } },
+    { "method": "HEAD", "path": "/health", "status": 200, "body": "ready\n" },
+    { "method": "DELETE", "path": "/payments/demo-001", "status": 204, "body": "" }
+  ]
+}

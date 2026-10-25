@@ -1,0 +1,15 @@
+{
+  "name": "http-fixture-lab",
+  "version": "1.0.0",
+  "description": "A small, loopback-only declarative HTTP fixture server for integration tests.",
+  "type": "module",
+  "engines": { "node": ">=20" },
+  "exports": "./index.js",
+  "bin": { "http-fixture-lab": "./cli.js" },
+  "files": ["index.js", "cli.js", "README.md", "README.pt-BR.md", "LICENSE", "examples"],
+  "scripts": { "test": "node --test", "start": "node cli.js examples/payments.json" },
+  "license": "MIT",
+  "author": "Martin Lofrano",
+  "keywords": ["http", "fixtures", "integration-testing", "mock-server", "loopback"],
+  "repository": { "type": "git", "url": "https://github.com/martinlofranodeoliveira/http-fixture-lab.git" }
+}
